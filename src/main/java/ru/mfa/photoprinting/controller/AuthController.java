@@ -1,186 +1,240 @@
 package ru.mfa.photoprinting.controller;
 
 import jakarta.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import ru.mfa.photoprinting.dto.*;
 import ru.mfa.photoprinting.model.User;
-import ru.mfa.photoprinting.security.JwtService;
-import ru.mfa.photoprinting.service.TokenRefreshService;
-import ru.mfa.photoprinting.service.UserService;
+import ru.mfa.photoprinting.model.UserSession;
+import ru.mfa.photoprinting.enums.ApplicationUserRole;
+import ru.mfa.photoprinting.enums.SessionStatus;
+import ru.mfa.photoprinting.repository.UserRepository;
+import ru.mfa.photoprinting.repository.UserSessionRepository;
+import ru.mfa.photoprinting.security.JwtTokenProvider;
 
-import java.util.HashSet;
+import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
 
-    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
-
-    private final UserService userService;
-    private final AuthenticationManager authenticationManager;
-    private final TokenRefreshService tokenRefreshService;
-    private final JwtService jwtService;
+    private final UserRepository userRepository;
+    private final UserSessionRepository userSessionRepository;
     private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authenticationManager;
+    private final JwtTokenProvider jwtTokenProvider;
 
-    public AuthController(UserService userService, AuthenticationManager authenticationManager,
-                          TokenRefreshService tokenRefreshService, JwtService jwtService,
-                          PasswordEncoder passwordEncoder) {
-        this.userService = userService;
-        this.authenticationManager = authenticationManager;
-        this.tokenRefreshService = tokenRefreshService;
-        this.jwtService = jwtService;
+    public AuthController(UserRepository userRepository,
+                          UserSessionRepository userSessionRepository,
+                          PasswordEncoder passwordEncoder,
+                          AuthenticationManager authenticationManager,
+                          JwtTokenProvider jwtTokenProvider) {
+        this.userRepository = userRepository;
+        this.userSessionRepository = userSessionRepository;
         this.passwordEncoder = passwordEncoder;
+        this.authenticationManager = authenticationManager;
+        this.jwtTokenProvider = jwtTokenProvider;
     }
 
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@Valid @RequestBody RegistrationRequestDTO request) {
         try {
-            if (userService.existsByUsername(request.getUsername())) {
+            if (userRepository.existsByEmail(request.getEmail())) {
                 return ResponseEntity.badRequest()
-                        .body(new AuthResponseDTO(null, null, null, null, null, null, null, null,
-                                "Username already exists: " + request.getUsername()));
+                        .body(Map.of("error", "Email already exists"));
             }
 
-            if (userService.existsByEmail(request.getEmail())) {
-                return ResponseEntity.badRequest()
-                        .body(new AuthResponseDTO(null, null, null, null, null, null, null, null,
-                                "Email already exists: " + request.getEmail()));
-            }
+            User user = new User();
+            user.setUsername(request.getUsername());
+            user.setEmail(request.getEmail());
+            user.setPassword(passwordEncoder.encode(request.getPassword()));
+            user.setFullName(request.getFullName());
+            user.setStudentId(request.getStudentId());
+            user.setRole(ApplicationUserRole.USER);
+            user.setEnabled(true);
+            user.setAccountNonLocked(true);
 
-            Set<String> roles = new HashSet<>();
-            roles.add("USER");
+            User savedUser = userRepository.save(user);
 
-            User user = new User(
-                    request.getUsername(),
-                    request.getEmail(),
-                    passwordEncoder.encode(request.getPassword()),
-                    request.getFullName(),
-                    roles
-            );
-
-            User savedUser = userService.saveUser(user);
-
-            Map<String, String> tokens = tokenRefreshService.createTokenPair(savedUser.getEmail(), "web-registration");
-
-            AuthResponseDTO response = new AuthResponseDTO(
-                    savedUser.getId(), savedUser.getUsername(), savedUser.getEmail(), savedUser.getFullName(),
-                    savedUser.getRoles(), tokens.get("accessToken"), tokens.get("refreshToken"),
-                    jwtService.getAccessExpirationSeconds(), "User registered successfully"
-            );
-
-            return ResponseEntity.status(HttpStatus.CREATED).body(response);
-
-        } catch (RuntimeException e) {
-            log.error("Registration error: ", e);
+            return ResponseEntity.ok(Map.of(
+                    "message", "User registered successfully",
+                    "email", savedUser.getEmail(),
+                    "username", savedUser.getUsername(),
+                    "studentId", savedUser.getStudentId(),
+                    "role", savedUser.getRole().name()
+            ));
+        } catch (Exception e) {
             return ResponseEntity.badRequest()
-                    .body(new AuthResponseDTO(null, null, null, null, null, null, null, null, e.getMessage()));
+                    .body(Map.of("error", "Registration failed: " + e.getMessage()));
         }
     }
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody AuthRequestDTO request) {
         try {
-            Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
-            );
+            Optional<User> userOpt = userRepository.findByEmail(request.getEmail());
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Invalid credentials"));
+            }
 
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+            try {
+                authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
+                );
+            } catch (BadCredentialsException e) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Invalid credentials"));
+            }
 
-            Map<String, String> tokens = tokenRefreshService.createTokenPair(
-                    request.getEmail(),
-                    request.getDeviceId() != null ? request.getDeviceId() : "web-client"
-            );
+            User user = userOpt.get();
 
-            User user = userService.findByEmail(request.getEmail()).orElse(null);
+            // 1. Сначала генерируем access token
+            String accessToken = jwtTokenProvider.generateAccessToken(user);
+            String accessTokenId = jwtTokenProvider.getJtiFromToken(accessToken);
 
-            AuthResponseDTO response = new AuthResponseDTO(
-                    user != null ? user.getId() : null,
-                    user != null ? user.getUsername() : null,
-                    request.getEmail(),
-                    user != null ? user.getFullName() : null,
-                    user != null ? user.getRoles() : null,
-                    tokens.get("accessToken"),
-                    tokens.get("refreshToken"),
-                    jwtService.getAccessExpirationSeconds(),
-                    "Login successful"
-            );
+            // 2. Создаем сессию с access_token_id
+            UserSession userSession = new UserSession();
+            userSession.setUserId(user.getId());
+            userSession.setStatus(SessionStatus.ACTIVE);
+            userSession.setExpiresAt(LocalDateTime.now().plusDays(30));
+            userSession.setAccessTokenId(accessTokenId);
+
+            UserSession savedSession = userSessionRepository.save(userSession);
+
+            // 3. Генерируем refresh token с ID сессии
+            String refreshToken = jwtTokenProvider.generateRefreshToken(user, savedSession.getId().toString());
+
+            // 4. Обновляем сессию с refresh token
+            savedSession.setRefreshToken(refreshToken);
+            userSessionRepository.save(savedSession);
+
+            AuthResponseDTO response = new AuthResponseDTO();
+            response.setAccessToken(accessToken);
+            response.setRefreshToken(refreshToken);
+            response.setExpiresIn(jwtTokenProvider.getAccessExpirationMs());
+            response.setTokenType("Bearer");
+            response.setEmail(user.getEmail());
+            response.setUsername(user.getUsername());
+            response.setFullName(user.getFullName());
+            response.setRoles(Set.of(user.getRole().name()));
 
             return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            log.error("Login error: ", e);
+        } catch (Exception ex) {
+            ex.printStackTrace();
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthResponseDTO(null, null, null, null, null, null, null, null, "Invalid credentials"));
+                    .body(Map.of("error", "Authentication failed: " + ex.getMessage()));
         }
     }
 
     @PostMapping("/refresh")
-    public ResponseEntity<?> refresh(@Valid @RequestBody RefreshRequestDTO request) {
+    public ResponseEntity<?> refreshToken(@Valid @RequestBody RefreshRequestDTO request) {
         try {
-            Map<String, String> tokens = tokenRefreshService.refreshTokens(request.getRefreshToken());
+            if (!jwtTokenProvider.validateRefreshToken(request.getRefreshToken())) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Invalid refresh token"));
+            }
 
-            AuthResponseDTO response = new AuthResponseDTO(
-                    null, null, null, null, null,
-                    tokens.get("accessToken"), tokens.get("refreshToken"),
-                    jwtService.getAccessExpirationSeconds(), "Token refreshed successfully"
-            );
+            String sessionId = jwtTokenProvider.getSessionIdFromRefreshToken(request.getRefreshToken());
+            Long userId = jwtTokenProvider.getUserIdFromRefreshToken(request.getRefreshToken());
+
+            Optional<UserSession> sessionOpt = userSessionRepository.findById(Long.parseLong(sessionId));
+            if (sessionOpt.isEmpty() || !sessionOpt.get().getStatus().equals(SessionStatus.ACTIVE)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Session is not active"));
+            }
+
+            UserSession oldSession = sessionOpt.get();
+            if (!oldSession.getUserId().equals(userId)) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("error", "Access denied"));
+            }
+
+            Optional<User> userOpt = userRepository.findById(userId);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "User not found"));
+            }
+
+            User user = userOpt.get();
+
+            oldSession.setStatus(SessionStatus.REFRESHED);
+            oldSession.setRevokedAt(LocalDateTime.now());
+            userSessionRepository.save(oldSession);
+
+            UserSession newSession = new UserSession();
+            newSession.setUserId(user.getId());
+            newSession.setStatus(SessionStatus.ACTIVE);
+            newSession.setExpiresAt(LocalDateTime.now().plusDays(30));
+
+            UserSession savedSession = userSessionRepository.save(newSession);
+
+            String newAccessToken = jwtTokenProvider.generateAccessToken(user);
+            String newRefreshToken = jwtTokenProvider.generateRefreshToken(user, savedSession.getId().toString());
+
+            newSession.setRefreshToken(newRefreshToken);
+            userSessionRepository.save(newSession);
+
+            AuthResponseDTO response = new AuthResponseDTO();
+            response.setAccessToken(newAccessToken);
+            response.setRefreshToken(newRefreshToken);
+            response.setExpiresIn(jwtTokenProvider.getAccessExpirationMs());
+            response.setEmail(user.getEmail());
+            response.setUsername(user.getUsername());
+            response.setFullName(user.getFullName());
+            response.setRoles(Set.of(user.getRole().name()));
 
             return ResponseEntity.ok(response);
-
-        } catch (RuntimeException e) {
-            log.error("Refresh error: ", e);
+        } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthResponseDTO(null, null, null, null, null, null, null, null, e.getMessage()));
+                    .body(Map.of("error", "Token refresh failed"));
         }
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<?> logout(@RequestBody(required = false) RefreshRequestDTO request) {
-        if (request != null && request.getRefreshToken() != null) {
-            tokenRefreshService.logout(request.getRefreshToken());
+    public ResponseEntity<?> logout(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            if (jwtTokenProvider.validateAccessToken(token)) {
+                String email = jwtTokenProvider.getEmailFromAccessToken(token);
+                Optional<User> userOpt = userRepository.findByEmail(email);
+                if (userOpt.isPresent()) {
+                    userSessionRepository.revokeAllUserSessions(userOpt.get().getId(), SessionStatus.REVOKED);
+                }
+            }
         }
-        return ResponseEntity.ok(new AuthResponseDTO(null, null, null, null, null, null, null, null, "Logout successful"));
-    }
-
-    @PostMapping("/logout-all")
-    public ResponseEntity<?> logoutAll(Authentication authentication) {
-        if (authentication != null) {
-            String email = authentication.getName();
-            tokenRefreshService.logoutAll(email);
-        }
-        return ResponseEntity.ok(new AuthResponseDTO(null, null, null, null, null, null, null, null, "All sessions logged out"));
+        return ResponseEntity.ok(Map.of("message", "Logout successful"));
     }
 
     @GetMapping("/me")
-    public ResponseEntity<?> getCurrentUser(Authentication authentication) {
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthResponseDTO(null, null, null, null, null, null, null, null, "Not authenticated"));
+    public ResponseEntity<?> getCurrentUser(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            if (jwtTokenProvider.validateAccessToken(token)) {
+                String email = jwtTokenProvider.getEmailFromAccessToken(token);
+                Optional<User> userOpt = userRepository.findByEmail(email);
+                if (userOpt.isPresent()) {
+                    User user = userOpt.get();
+                    return ResponseEntity.ok(Map.of(
+                            "id", user.getId(),
+                            "email", user.getEmail(),
+                            "username", user.getUsername(),
+                            "fullName", user.getFullName(),
+                            "studentId", user.getStudentId(),
+                            "role", user.getRole().name()
+                    ));
+                }
+            }
         }
-
-        String email = authentication.getName();
-        User user = userService.findByEmail(email).orElse(null);
-
-        if (user == null) {
-            return ResponseEntity.notFound().build();
-        }
-
-        AuthResponseDTO response = new AuthResponseDTO(
-                user.getId(), user.getUsername(), user.getEmail(), user.getFullName(), user.getRoles(),
-                null, null, null, "Current user info"
-        );
-
-        return ResponseEntity.ok(response);
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(Map.of("error", "Not authenticated"));
     }
 }

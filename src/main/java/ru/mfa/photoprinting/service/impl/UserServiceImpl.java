@@ -1,14 +1,13 @@
 package ru.mfa.photoprinting.service.impl;
 
 import ru.mfa.photoprinting.dto.RegistrationRequestDTO;
+import ru.mfa.photoprinting.enums.ApplicationUserRole;
 import ru.mfa.photoprinting.model.User;
 import ru.mfa.photoprinting.repository.UserRepository;
 import ru.mfa.photoprinting.service.UserService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import java.util.HashSet;
 import java.util.Optional;
-import java.util.Set;
 
 @Service
 public class UserServiceImpl implements UserService {
@@ -31,16 +30,16 @@ public class UserServiceImpl implements UserService {
             throw new RuntimeException("Email already exists: " + request.getEmail());
         }
 
-        Set<String> roles = new HashSet<>();
-        roles.add("USER");
-
-        User user = new User(
-                request.getUsername(),
-                request.getEmail(),
-                passwordEncoder.encode(request.getPassword()),
-                request.getFullName(),
-                roles
-        );
+        // Создаем пользователя без роли в конструкторе
+        User user = new User();
+        user.setUsername(request.getUsername());
+        user.setEmail(request.getEmail());
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setFullName(request.getFullName());
+        user.setStudentId(request.getStudentId());
+        user.setRole(ApplicationUserRole.USER);  // Устанавливаем роль отдельно
+        user.setEnabled(true);
+        user.setAccountNonLocked(true);
 
         return userRepository.save(user);
     }

@@ -2,68 +2,77 @@ package ru.mfa.photoprinting.model;
 
 import jakarta.persistence.*;
 import ru.mfa.photoprinting.enums.SessionStatus;
-import java.time.Instant;
-import java.util.UUID;
+import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "user_sessions")
 public class UserSession {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    @Column(name = "user_email", nullable = false)
-    private String userEmail;
+    @Column(name = "user_id", nullable = false)
+    private Long userId;
 
-    @Column(name = "device_id")
-    private String deviceId;
-
-    @Column(name = "refresh_token", length = 512, unique = true)
+    @Column(name = "refresh_token", length = 512)
     private String refreshToken;
 
-    @Column(name = "refresh_token_expiry")
-    private Instant refreshTokenExpiry;
+    @Column(name = "refresh_token_hash", nullable = true)
+    private String refreshTokenHash;
+
+    @Column(name = "access_token_id", unique = true)
+    private String accessTokenId;
+
+    @Column(name = "user_agent")
+    private String userAgent;
+
+    @Column(name = "ip_address")
+    private String ipAddress;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
     private SessionStatus status = SessionStatus.ACTIVE;
 
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
+
+    @Column(name = "last_used_at")
+    private LocalDateTime lastUsedAt;
+
     @Column(name = "created_at")
-    private Instant createdAt;
+    private LocalDateTime createdAt = LocalDateTime.now();
 
-    @Column(name = "last_access_token", length = 512)
-    private String lastAccessToken;
+    @Column(name = "revoked_at")
+    private LocalDateTime revokedAt;
 
+    // Constructors
     public UserSession() {}
 
-    @PrePersist
-    protected void onCreate() {
-        createdAt = Instant.now();
-    }
-
-    // Getters and Setters
-    public UUID getId() { return id; }
-    public void setId(UUID id) { this.id = id; }
-
-    public String getUserEmail() { return userEmail; }
-    public void setUserEmail(String userEmail) { this.userEmail = userEmail; }
-
-    public String getDeviceId() { return deviceId; }
-    public void setDeviceId(String deviceId) { this.deviceId = deviceId; }
-
+    // Getters
+    public Long getId() { return id; }
+    public Long getUserId() { return userId; }
     public String getRefreshToken() { return refreshToken; }
-    public void setRefreshToken(String refreshToken) { this.refreshToken = refreshToken; }
-
-    public Instant getRefreshTokenExpiry() { return refreshTokenExpiry; }
-    public void setRefreshTokenExpiry(Instant refreshTokenExpiry) { this.refreshTokenExpiry = refreshTokenExpiry; }
-
+    public String getRefreshTokenHash() { return refreshTokenHash; }
+    public String getAccessTokenId() { return accessTokenId; }
+    public String getUserAgent() { return userAgent; }
+    public String getIpAddress() { return ipAddress; }
     public SessionStatus getStatus() { return status; }
+    public LocalDateTime getExpiresAt() { return expiresAt; }
+    public LocalDateTime getLastUsedAt() { return lastUsedAt; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public LocalDateTime getRevokedAt() { return revokedAt; }
+
+    // Setters
+    public void setId(Long id) { this.id = id; }
+    public void setUserId(Long userId) { this.userId = userId; }
+    public void setRefreshToken(String refreshToken) { this.refreshToken = refreshToken; }
+    public void setRefreshTokenHash(String refreshTokenHash) { this.refreshTokenHash = refreshTokenHash; }
+    public void setAccessTokenId(String accessTokenId) { this.accessTokenId = accessTokenId; }
+    public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
+    public void setIpAddress(String ipAddress) { this.ipAddress = ipAddress; }
     public void setStatus(SessionStatus status) { this.status = status; }
-
-    public Instant getCreatedAt() { return createdAt; }
-    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
-
-    public String getLastAccessToken() { return lastAccessToken; }
-    public void setLastAccessToken(String lastAccessToken) { this.lastAccessToken = lastAccessToken; }
+    public void setExpiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; }
+    public void setLastUsedAt(LocalDateTime lastUsedAt) { this.lastUsedAt = lastUsedAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public void setRevokedAt(LocalDateTime revokedAt) { this.revokedAt = revokedAt; }
 }
